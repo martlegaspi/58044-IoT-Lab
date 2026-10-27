@@ -1,59 +1,101 @@
 #include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 #include <Adafruit_BMP280.h>
 #include <BH1750.h>
 #include <DHT.h>
 
-#define DHT_PIN     4
-#define DHT_TYPE    DHT22
-#define BH1750_ADDR 0x23
-#define BMP_A_ADDR  0x77 // Updated to match your scanner address
+// --- Pin & Address Definitions ---
+#define DHT_PIN      4
+#define DHT_TYPE     DHT11
+#define LCD_ADDR     0x27
+#define BH1750_ADDR  0x23
+#define BMP_A_ADDR   0x77  // Matches your I2C scan result
 
-Adafruit_BMP280 bmpA;
-BH1750          lightMeter(BH1750_ADDR);
-DHT             dht(DHT_PIN, DHT_TYPE);
+// --- Peripheral Instances ---
+LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
+Adafruit_BMP280   bmpA;
+BH1750            lightMeter(BH1750_ADDR);
+DHT               dht(DHT_PIN, DHT_TYPE);
 
-// Structure for a single coherent acquisition snapshot
+// --- Data Record Structure ---
 struct EnvRecord {
-  uint32_t ts;       // Timestamp (seconds)
-  float tempC;      // Temperature from DHT22 (°C)
-  float humPct;     // Relative Humidity from DHT22 (%)
-  float presHpa;    // Barometric Pressure from BMP280 (hPa)
-  float lux;        // Light level from BH1750 (lux)
+  uint32_t ts;
+  float tempC;
+  float humPct;
+  float presHpa;
+  float lux;
 };
 
 unsigned long lastAcquireTime = 0;
-const unsigned long acquireInterval = 2000; // 2 seconds governed by DHT22
+const unsigned long acquireInterval = 2000; // 2 seconds
+bool toggleDisplay = false; // Alternate LCD screens
+
+EnvRecord acquireData();
+void updateLCD(const EnvRecord& r);
 
 void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 3000);
 
-  Serial.println("\n=== Lab 7: Single Acquisition Cycle (Part D) ===");
+  Serial.println("\n=== Lab 7: Single Acquisition Cycle with LCD Output (Part D) ===");
 
+  // Initialize I2C Bus on GPIO 21 (SDA) and GPIO 22 (SCL)
   Wire.begin(21, 22);
+
+  // Initialize LCD Display
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Lab 7 System");
+  lcd.setCursor(0, 1);
+  lcd.print("Initializing...");
+
+  // Initialize DHT22
   dht.begin();
-  
+
+  // Initialize BMP280
   if (!bmpA.begin(BMP_A_ADDR)) {
-    Serial.println("BMP280 Sensor not found!");
+    Serial.println("[WARN] BMP280 failed to initialize!");
+  } else {
+    bmpA.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                    Adafruit_BMP280::SAMPLING_X2,
+                    Adafruit_BMP280::SAMPLING_X16,
+                    Adafruit_BMP280::FILTER_X16,
+                    Adafruit_BMP280::STANDBY_MS_500);
   }
+
+  // Initialize BH1750
   if (!lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
-    Serial.println("BH1750 Light Sensor not found!");
+    Serial.println("[WARN] BH1750 failed to initialize!");
   }
+
+  delay(2000);
+  lcd.clear();
 }
 
 void loop() {
   unsigned long now = millis();
 
-  // Non-blocking timer
+  // Non-blocking 2-second acquisition cycle
   if (now - lastAcquireTime >= acquireInterval) {
     lastAcquireTime = now;
 
-    // Perform synchronized single acquisition cycle
+    // 1. Acquire single synchronized snapshot
     EnvRecord record = acquireData();
 
-    // Print unified record to Serial
-    Serial.printf("[%lu s] Temp: %.1f °C | Hum: %.1f %% | Pres: %.2f hPa | Light: %.1f lux\n",
-                  record.ts, record.tempC, record.humPct, record.presHpa, record.lux);
+    // 2. Print snapshot to Serial Monitor
+    Serial.printf("[%lu s] Temp: ", record.ts);
+    if (isnan(record.tempC)) Serial.print("ERR");
+    else Serial.printf("%.1f C", record.tempC);
+
+    Serial.print(" | Hum: ");
+    if (isnan(record.humPct)) Serial.print("ERR");
+    else Serial.printf("%.1f %%", record.humPct);
+
+    Serial.printf(" | Pres: %.1f hPa | Light: %.1f lux\n", record.presHpa, record.lux);
+
+    // 3. Update LCD Screen
+    updateLCD(record);
   }
 }
 
@@ -65,4 +107,46 @@ EnvRecord acquireData() {
   r.presHpa = bmpA.readPressure() / 100.0F; // Convert Pa to hPa
   r.lux     = lightMeter.readLightLevel();
   return r;
+}
+
+void updateLCD(const EnvRecord& r) {
+  lcd.clear();
+
+  // Toggle between View 1 (Temp/Hum) and View 2 (Pres/Lux) every 2s
+  if (!toggleDisplay) {
+    // Row 1: Temperature
+    lcd.setCursor(0, 0);
+    lcd.print("Temp: ");
+    if (isnan(r.tempC)) lcd.print("ERR");
+    else {
+      lcd.print(r.tempC, 1);
+      lcd.print(" C");
+    }
+
+    // Row 2: Humidity
+    lcd.setCursor(0, 1);
+    lcd.print("Hum : ");
+    if (isnan(r.humPct)) lcd.print("ERR");
+    else {
+      lcd.print(r.humPct, 1);
+      lcd.print(" %");
+    }
+  } else {
+    // Row 1: Pressure
+    lcd.setCursor(0, 0);
+    lcd.print("Pres: ");
+    if (r.presHpa <= 0.0) lcd.print("ERR");
+    else {
+      lcd.print(r.presHpa, 1);
+      lcd.print(" hPa");
+    }
+
+    // Row 2: Ambient Light
+    lcd.setCursor(0, 1);
+    lcd.print("Lux : ");
+    lcd.print(r.lux, 1);
+    lcd.print(" lx");
+  }
+
+  toggleDisplay = !toggleDisplay; // Switch view for next cycle
 }
