@@ -1,0 +1,53 @@
+#include <Wire.h>
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial && millis() < 3000); // Wait for serial connection
+  
+  // Initialize I2C Bus on default ESP32 pins (SDA: GPIO 21, SCL: GPIO 22)
+  Wire.begin(21, 22);
+  Serial.println("\n=== Lab 7: I2C Bus Scanner (Part A) ===");
+}
+
+void loop() {
+  byte error, address;
+  int nDevices = 0;
+
+  Serial.println("Scanning I2C bus...");
+
+  for (address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+
+    if (error == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address < 16) Serial.print("0");
+      Serial.print(address, HEX);
+      
+      // Identify known devices based on address
+      if (address == 0x23) {
+        Serial.println(" (BH1750 Light Sensor)");
+      } else if (address == 0x27) {
+        Serial.println(" (16x2 LCD Backpack)");
+      } else if (address == 0x76 || address == 0x77) {
+        Serial.println(" (BMP280 Pressure Sensor)");
+      } else {
+        Serial.println(" (Unknown Device)");
+      }
+
+      nDevices++;
+    } else if (error == 4) {
+      Serial.print("Unknown error at address 0x");
+      if (address < 16) Serial.print("0");
+      Serial.println(address, HEX);
+    }
+  }
+
+  if (nDevices == 0) {
+    Serial.println("No I2C devices found!\n");
+  } else {
+    Serial.printf("Scan complete. Found %d device(s).\n\n", nDevices);
+  }
+
+  delay(5000); // Repeat scan every 5 seconds
+}
