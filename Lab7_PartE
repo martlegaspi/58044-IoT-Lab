@@ -1,0 +1,162 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_BMP280.h>
+#include <BH1750.h>
+#include <DHT.h>
+
+// --- Pin & Address Definitions ---
+#define DHT_PIN      4
+#define DHT_TYPE     DHT11
+#define LCD_ADDR     0x27
+#define BH1750_ADDR  0x23
+#define BMP_A_ADDR   0x77  
+
+// --- Peripheral Instances ---
+LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
+Adafruit_BMP280   bmpA;
+BH1750            lightMeter(BH1750_ADDR);
+DHT               dht(DHT_PIN, DHT_TYPE);
+
+// --- Data Record Structure with Plausibility Flags ---
+struct EnvRecord {
+  uint32_t ts;
+  float tempC;
+  float humPct;
+  float presHpa;
+  float lux;
+  uint8_t flags; // Bitmask for suspect channels
+};
+
+unsigned long lastAcquireTime = 0;
+const unsigned long acquireInterval = 2000; 
+bool toggleDisplay = false; 
+
+EnvRecord acquireData();
+uint8_t checkPlausibility(const EnvRecord& r);
+void updateLCD(const EnvRecord& r);
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial && millis() < 3000);
+
+  Serial.println("\n=== Lab 7: Plausibility Checking & Flagging (Part E - Group A) ===");
+
+  Wire.begin(21, 22);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Lab 7 System");
+  lcd.setCursor(0, 1);
+  lcd.print("Initializing...");
+
+  dht.begin();
+
+  if (!bmpA.begin(BMP_A_ADDR)) {
+    Serial.println("[WARN] BMP280 failed to initialize!");
+  } else {
+    bmpA.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                    Adafruit_BMP280::SAMPLING_X2,
+                    Adafruit_BMP280::SAMPLING_X16,
+                    Adafruit_BMP280::FILTER_X16,
+                    Adafruit_BMP280::STANDBY_MS_500);
+  }
+
+  if (!lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+    Serial.println("[WARN] BH1750 failed to initialize!");
+  }
+
+  delay(2000);
+  lcd.clear();
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  if (now - lastAcquireTime >= acquireInterval) {
+    lastAcquireTime = now;
+
+    // 1. Acquire synchronized snapshot with plausibility flags
+    EnvRecord record = acquireData();
+
+    // 2. Print snapshot & flag status to Serial Monitor
+    Serial.printf("[%lu s] Temp: ", record.ts);
+    if (record.flags & 0x01) Serial.print("ERR(FLG)");
+    else Serial.printf("%.1f C", record.tempC);
+
+    Serial.print(" | Hum: ");
+    if (record.flags & 0x02) Serial.print("ERR(FLG)");
+    else Serial.printf("%.1f %%", record.humPct);
+
+    Serial.printf(" | Pres: %.1f hPa | Light: %.1f lux | Flags: 0x%02X\n", 
+                  record.presHpa, record.lux, record.flags);
+
+    // 3. Update LCD Screen
+    updateLCD(record);
+  }
+}
+
+EnvRecord acquireData() {
+  EnvRecord r;
+  r.ts      = millis() / 1000;
+  r.tempC   = dht.readTemperature();
+  r.humPct  = dht.readHumidity();
+  r.presHpa = bmpA.readPressure() / 100.0F; 
+  r.lux     = lightMeter.readLightLevel();
+
+  // Evaluate plausibility rules
+  r.flags   = checkPlausibility(r);
+  return r;
+}
+
+uint8_t checkPlausibility(const EnvRecord& r) {
+  uint8_t f = 0x00; // 0x00 = All channels valid
+
+  if (isnan(r.tempC) || r.tempC < -20.0 || r.tempC > 70.0) f |= 0x01; // Bit 0: Temp error
+  if (isnan(r.humPct) || r.humPct < 0.0 || r.humPct > 100.0) f |= 0x02; // Bit 1: Hum error
+  if (isnan(r.presHpa) || r.presHpa < 800.0 || r.presHpa > 1100.0) f |= 0x04; // Bit 2: Pres error
+  if (isnan(r.lux) || r.lux < 0.0 || r.lux > 100000.0) f |= 0x08; // Bit 3: Light error
+
+  return f;
+}
+
+void updateLCD(const EnvRecord& r) {
+  lcd.clear();
+
+  // If any channel is flagged, show error status on top row
+  if (r.flags != 0x00) {
+    lcd.setCursor(0, 0);
+    lcd.print("FLAG: 0x");
+    if (r.flags < 0x10) lcd.print("0");
+    lcd.print(r.flags, HEX);
+    lcd.print(" SUSPECT");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Check Sensors!");
+    return;
+  }
+
+  if (!toggleDisplay) {
+    lcd.setCursor(0, 0);
+    lcd.print("Temp: ");
+    lcd.print(r.tempC, 1);
+    lcd.print(" C");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Hum : ");
+    lcd.print(r.humPct, 1);
+    lcd.print(" %");
+  } else {
+    lcd.setCursor(0, 0);
+    lcd.print("Pres: ");
+    lcd.print(r.presHpa, 1);
+    lcd.print(" hPa");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Lux : ");
+    lcd.print(r.lux, 1);
+    lcd.print(" lx");
+  }
+
+  toggleDisplay = !toggleDisplay;
+}
