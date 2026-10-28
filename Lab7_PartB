@@ -1,0 +1,138 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_BMP280.h>
+#include <BH1750.h>
+#include <DHT.h>
+
+// --- Pin & Address Definitions ---
+#define DHT_PIN       4
+#define DHT_TYPE      DHT11
+#define LCD_ADDR      0x27
+#define BH1750_ADDR   0x23
+#define BMP_1_ADDR    0x76  // Sensor #1 (SDO tied to GND)
+#define BMP_2_ADDR    0x77  // Sensor #2 (SDO tied to 3.3V)
+
+// --- Peripheral Instances ---
+LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
+Adafruit_BMP280   bmp1;
+Adafruit_BMP280   bmp2;
+BH1750            lightMeter(BH1750_ADDR);
+DHT               dht(DHT_PIN, DHT_TYPE);
+
+struct DualBmpRecord {
+  uint32_t ts;
+  float tempDHT;
+  float tempBMP1;
+  float tempBMP2;
+  float pres1;
+  float pres2;
+  float lux;
+};
+
+unsigned long lastAcquireTime = 0;
+const unsigned long acquireInterval = 2000;
+bool toggleDisplay = false;
+
+DualBmpRecord acquireDualData();
+void updateLCD(const DualBmpRecord& r);
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial && millis() < 3000);
+
+  Serial.println("\n=== Lab 7: Address Conflict Resolution (Part B - Group A) ===");
+
+  Wire.begin(21, 22);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Part B: Dual BMP");
+  lcd.setCursor(0, 1);
+  lcd.print("Initializing...");
+
+  dht.begin();
+
+  // Initialize BMP280 Sensor #1 at 0x76
+  if (!bmp1.begin(BMP_1_ADDR)) {
+    Serial.println("[WARN] BMP280 #1 failed at 0x76!");
+  } else {
+    bmp1.setSampling(Adafruit_BMP280::MODE_NORMAL, Adafruit_BMP280::SAMPLING_X2, Adafruit_BMP280::SAMPLING_X16, Adafruit_BMP280::FILTER_X16, Adafruit_BMP280::STANDBY_MS_500);
+  }
+
+  // Initialize BMP280 Sensor #2 at 0x77
+  if (!bmp2.begin(BMP_2_ADDR)) {
+    Serial.println("[WARN] BMP280 #2 failed at 0x77!");
+  } else {
+    bmp2.setSampling(Adafruit_BMP280::MODE_NORMAL, Adafruit_BMP280::SAMPLING_X2, Adafruit_BMP280::SAMPLING_X16, Adafruit_BMP280::FILTER_X16, Adafruit_BMP280::STANDBY_MS_500);
+  }
+
+  if (!lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+    Serial.println("[WARN] BH1750 failed to initialize!");
+  }
+
+  delay(2000);
+  lcd.clear();
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  if (now - lastAcquireTime >= acquireInterval) {
+    lastAcquireTime = now;
+
+    DualBmpRecord rec = acquireDualData();
+
+    // Print resolved dual readings to Serial
+    Serial.printf("[%lu s] DHT11: %.1f C | BMP1(0x76): %.1f C, %.1f hPa | BMP2(0x77): %.1f C, %.1f hPa | Light: %.1f lux\n",
+                  rec.ts, rec.tempDHT, rec.tempBMP1, rec.pres1, rec.tempBMP2, rec.pres2, rec.lux);
+
+    updateLCD(rec);
+  }
+}
+
+DualBmpRecord acquireDualData() {
+  DualBmpRecord r;
+  r.ts       = millis() / 1000;
+  r.tempDHT  = dht.readTemperature();
+  r.tempBMP1 = bmp1.readTemperature();
+  r.pres1    = bmp1.readPressure() / 100.0F;
+  r.tempBMP2 = bmp2.readTemperature();
+  r.pres2    = bmp2.readPressure() / 100.0F;
+  r.lux      = lightMeter.readLightLevel();
+  return r;
+}
+
+void updateLCD(const DualBmpRecord& r) {
+  lcd.clear();
+
+  if (!toggleDisplay) {
+    // Row 1: BMP1 Temp & Pressure
+    lcd.setCursor(0, 0);
+    lcd.print("BMP1: ");
+    lcd.print(r.tempBMP1, 1);
+    lcd.print("C ");
+    lcd.print((int)r.pres1);
+
+    // Row 2: BMP2 Temp & Pressure
+    lcd.setCursor(0, 1);
+    lcd.print("BMP2: ");
+    lcd.print(r.tempBMP2, 1);
+    lcd.print("C ");
+    lcd.print((int)r.pres2);
+  } else {
+    // Row 1: DHT11 Temp
+    lcd.setCursor(0, 0);
+    lcd.print("DHT11: ");
+    lcd.print(r.tempDHT, 1);
+    lcd.print(" C");
+
+    // Row 2: Ambient Light
+    lcd.setCursor(0, 1);
+    lcd.print("Lux  : ");
+    lcd.print(r.lux, 1);
+    lcd.print(" lx");
+  }
+
+  toggleDisplay = !toggleDisplay;
+}
