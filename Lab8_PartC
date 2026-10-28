@@ -1,0 +1,82 @@
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_BMP280.h>
+#include <ArduinoJson.h>
+#include <time.h>
+
+const char* ssid = "Irma Gilda’s iPhone";
+const char* pass = "xpkaapejw47r4"; // Change to a wrong password first to perform the test!
+
+
+const char* DEVICE_ID = "g01-node-01";
+
+Adafruit_BMP280 bmp;
+
+struct EnvRecord {
+  float tempC;
+  float presHpa;
+  uint8_t flags;
+};
+
+void startClock() {
+  configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  time_t now = time(nullptr);
+  while (now < 1700000000) {
+    delay(300);
+    now = time(nullptr);
+  }
+}
+
+String buildPayload(const EnvRecord& r) {
+  StaticJsonDocument<256> doc;
+  
+  doc["deviceId"] = DEVICE_ID;
+  doc["ts"]       = (long)time(nullptr);
+  doc["tempC"]    = r.tempC;
+  doc["presHpa"]  = r.presHpa;
+  doc["flags"]    = r.flags;
+
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  if (!bmp.begin(0x77)) {
+    while (1) delay(10);
+  }
+
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                  Adafruit_BMP280::SAMPLING_X2,
+                  Adafruit_BMP280::SAMPLING_X16,
+                  Adafruit_BMP280::FILTER_X16,
+                  Adafruit_BMP280::STANDBY_MS_500);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(250);
+  }
+
+  startClock();
+}
+
+void loop() {
+  EnvRecord r;
+  
+  r.tempC = bmp.readTemperature();
+  r.presHpa = bmp.readPressure() / 100.0F;
+  
+  r.flags = 0;
+  if (r.tempC < -10.0 || r.tempC > 60.0) r.flags |= 0x01;
+  if (r.presHpa < 800.0 || r.presHpa > 1200.0) r.flags |= 0x04;
+
+  String jsonPayload = buildPayload(r);
+
+  Serial.println(jsonPayload);
+
+  delay(5000);
+}
