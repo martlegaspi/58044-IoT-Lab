@@ -6,8 +6,8 @@
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // Network Credentials
-const char* ssid = "Irma Gilda's iPhone";
-const char* pass = "YOUR_WIFI_PASSWORD"; // Change to a wrong password first to perform the test!
+const char* ssid = "Irma Gilda’s iPhone";
+const char* pass = "xpkaapejw47r4"; // Change to a wrong password first to perform the test!
 
 bool joinNetwork(const char* targetSsid, const char* targetPass, unsigned long timeoutMs = 20000) {
   WiFi.mode(WIFI_STA); // Set ESP32 to station mode
