@@ -1,0 +1,234 @@
+#include <WiFi.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_BMP280.h>
+#include <BH1750.h>
+#include <DHT.h>
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <time.h>
+
+#define DHT_PIN      4
+#define DHT_TYPE     DHT11
+#define SD_CS_PIN    5
+#define LCD_ADDR     0x27
+#define BH1750_ADDR  0x23
+#define BMP_A_ADDR   0x77  
+
+const char* ssid = "Irma Gilda’s iPhone";
+const char* pass = "xpkaapejw47r4"; // Change to a wrong password first to perform the test!
+
+const char* DEVICE_ID = "g01-node-01";
+
+// Database Configuration
+const char* DB_BASE  = "https://iot-lab-17f2d-default-rtdb.asia-southeast1.firebasedatabase.app/";
+const char* DB_TOKEN = "nvalid_token";
+
+LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
+Adafruit_BMP280   bmpA;
+BH1750            lightMeter(BH1750_ADDR);
+DHT               dht(DHT_PIN, DHT_TYPE);
+
+struct EnvRecord {
+  float tempC;
+  float humPct;
+  float presHpa;
+  float lux;
+  uint8_t flags;
+};
+
+unsigned long lastAcquireTime = 0;
+const unsigned long acquireInterval = 5000; 
+bool toggleDisplay = false; 
+bool sdMounted = false;
+
+const char* logFilename = "/env_log.csv";
+
+EnvRecord acquireData();
+uint8_t checkPlausibility(const EnvRecord& r);
+void updateLCD(const EnvRecord& r);
+void logToSD(const EnvRecord& r);
+
+void startClock() {
+  configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  time_t now = time(nullptr);
+  while (now < 1700000000) {
+    delay(300);
+    now = time(nullptr);
+  }
+}
+
+String buildPayload(const EnvRecord& r) {
+  StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["ts"]       = (long)time(nullptr);
+  doc["tempC"]    = r.tempC;
+  doc["humPct"]   = r.humPct;
+  doc["presHpa"]  = r.presHpa;
+  doc["lux"]      = r.lux;
+  doc["flags"]    = r.flags;
+
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+bool putJson(const String& path, const String& body) {
+  HTTPClient http;
+  String url = String(DB_BASE) + path + ".json?auth=" + String(DB_TOKEN);
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  int code = http.PUT(body);
+  http.end();
+  return (code == 200);
+}
+
+void publishRegistry() {
+  StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["location"] = "Lab Station A";
+  doc["tempUnit"] = "degC";
+  doc["humUnit"]  = "pct";
+  doc["presUnit"] = "hPa";
+  doc["luxUnit"]  = "lx";
+
+  String body;
+  serializeJson(doc, body);
+  putJson("/devices/" + String(DEVICE_ID) + "/registry", body);
+}
+
+void publish(const EnvRecord& r) {
+  String body = buildPayload(r);
+  long ts = (long)time(nullptr);
+  
+  // Overwrite current state record
+  putJson("/devices/" + String(DEVICE_ID) + "/current", body);
+  
+  // Append to history keyed by timestamp
+  putJson("/devices/" + String(DEVICE_ID) + "/history/" + String(ts), body);
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Lab 8 Cloud DB");
+  lcd.setCursor(0, 1);
+  lcd.print("Connecting...");
+
+  dht.begin();
+  bmpA.begin(BMP_A_ADDR);
+  bmpA.setSampling(Adafruit_BMP280::MODE_NORMAL, Adafruit_BMP280::SAMPLING_X2, Adafruit_BMP280::SAMPLING_X16, Adafruit_BMP280::FILTER_X16, Adafruit_BMP280::STANDBY_MS_500);
+  lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
+
+  if (SD.begin(SD_CS_PIN)) {
+    sdMounted = true;
+    if (!SD.exists(logFilename)) {
+      File file = SD.open(logFilename, FILE_WRITE);
+      if (file) {
+        file.println("Timestamp_s,Temp_C,Hum_Pct,Pres_hPa,Lux,Flags");
+        file.close();
+      }
+    }
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(250);
+  }
+
+  startClock();
+  publishRegistry(); // Write registry entry once at startup
+  lcd.clear();
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  if (now - lastAcquireTime >= acquireInterval) {
+    lastAcquireTime = now;
+
+    EnvRecord record = acquireData();
+
+    if (sdMounted) {
+      logToSD(record);
+    }
+
+    publish(record); // Overwrite /current and append to /history
+
+    String jsonPayload = buildPayload(record);
+    Serial.println(jsonPayload);
+
+    updateLCD(record);
+  }
+}
+
+EnvRecord acquireData() {
+  EnvRecord r;
+  r.tempC   = dht.readTemperature();
+  r.humPct  = dht.readHumidity();
+  r.presHpa = bmpA.readPressure() / 100.0F; 
+  r.lux     = lightMeter.readLightLevel();
+  r.flags   = checkPlausibility(r);
+  return r;
+}
+
+uint8_t checkPlausibility(const EnvRecord& r) {
+  uint8_t f = 0x00;
+  if (isnan(r.tempC) || r.tempC < -20.0 || r.tempC > 70.0) f |= 0x01;
+  if (isnan(r.humPct) || r.humPct < 0.0 || r.humPct > 100.0) f |= 0x02;
+  if (isnan(r.presHpa) || r.presHpa < 800.0 || r.presHpa > 1100.0) f |= 0x04;
+  if (isnan(r.lux) || r.lux < 0.0 || r.lux > 100000.0) f |= 0x08;
+  return f;
+}
+
+void logToSD(const EnvRecord& r) {
+  File logFile = SD.open(logFilename, FILE_WRITE);
+  if (logFile) {
+    logFile.printf("%ld,%.1f,%.1f,%.1f,%.1f,0x%02X\n",
+                   (long)time(nullptr), r.tempC, r.humPct, r.presHpa, r.lux, r.flags);
+    logFile.close();
+  } else {
+    sdMounted = false;
+  }
+}
+
+void updateLCD(const EnvRecord& r) {
+  lcd.clear();
+
+  if (r.flags != 0x00) {
+    lcd.setCursor(0, 0);
+    lcd.print("FLAG: 0x");
+    if (r.flags < 0x10) lcd.print("0");
+    lcd.print(r.flags, HEX);
+    lcd.print(" ERR");
+
+    lcd.setCursor(0, 1);
+    lcd.print(sdMounted ? "SD: LOGGING" : "SD: NO CARD");
+    return;
+  }
+
+  if (!toggleDisplay) {
+    lcd.setCursor(0, 0);
+    lcd.print("T:"); lcd.print(r.tempC, 1); lcd.print("C ");
+    lcd.print("H:"); lcd.print((int)r.humPct); lcd.print("%");
+
+    lcd.setCursor(0, 1);
+    lcd.print("SD:");
+    lcd.print(sdMounted ? "LOGGING OK" : "OFFLINE");
+  } else {
+    lcd.setCursor(0, 0);
+    lcd.print("P:"); lcd.print(r.presHpa, 1); lcd.print("hPa");
+
+    lcd.setCursor(0, 1);
+    lcd.print("L:"); lcd.print(r.lux, 1); lcd.print("lx");
+  }
+
+  toggleDisplay = !toggleDisplay;
+}
