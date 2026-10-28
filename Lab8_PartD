@@ -24,7 +24,7 @@ const char* DEVICE_ID = "g01-node-01";
 
 // Database Configuration
 const char* DB_BASE  = "https://iot-lab-17f2d-default-rtdb.asia-southeast1.firebasedatabase.app/";
-const char* DB_TOKEN = "nvalid_token";
+const char* DB_TOKEN = "pWhrIe2VGMXp6i26MD5m0ZM51E9WajfPdli3F5Hg";
 
 LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
 Adafruit_BMP280   bmpA;
