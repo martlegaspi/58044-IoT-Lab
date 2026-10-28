@@ -49,11 +49,17 @@ unsigned long backoff = 1000;
 
 const char* logFilename = "/env_log.csv";
 
+// Function Prototypes
 EnvRecord acquireData();
 uint8_t checkPlausibility(const EnvRecord& r);
 void updateLCD(const EnvRecord& r);
 void logToSD(const EnvRecord& r);
 void maintainLink();
+void handleSerialCommands();
+bool initSDCard();
+void ejectSDCard();
+void readSDFile();
+void listSDFiles();
 
 void startClock() {
   configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
@@ -129,8 +135,134 @@ void maintainLink() {
   }
 }
 
+bool initSDCard() {
+  Serial.println("\n[SD DIAG] Initializing SPI bus (SCK=18, MISO=19, MOSI=23, CS=5)...");
+  SPI.begin(18, 19, 23, SD_CS_PIN);
+
+  if (SD.begin(SD_CS_PIN)) {
+    sdMounted = true;
+    Serial.println("[SD DIAG] SUCCESS: MicroSD Card Mounted!");
+
+    if (!SD.exists(logFilename)) {
+      Serial.println("[SD DIAG] File /env_log.csv does not exist. Creating header...");
+      File file = SD.open(logFilename, FILE_WRITE);
+      if (file) {
+        file.println("Timestamp_s,Temp_C,Hum_Pct,Pres_hPa,Lux,Flags");
+        file.flush();
+        file.close();
+        Serial.println("[SD DIAG] Header written successfully!");
+      }
+    } else {
+      Serial.println("[SD DIAG] File /env_log.csv loaded.");
+    }
+    return true;
+  } else {
+    sdMounted = false;
+    Serial.println("[SD DIAG] ERROR: SD.begin() failed!");
+    return false;
+  }
+}
+
+void ejectSDCard() {
+  if (!sdMounted) {
+    Serial.println("[SD DIAG] Card is already unmounted or not present.");
+    return;
+  }
+
+  Serial.println("\n[SD EJECT] Flushing buffers and closing filesystem...");
+  SD.end(); // Safely unmount SD SPI peripheral
+  sdMounted = false;
+
+  Serial.println("=================================================");
+  Serial.println("  SAFE TO REMOVE MICROSD CARD NOW!");
+  Serial.println("  Re-insert card and type 'init' or '1' to remount.");
+  Serial.println("=================================================\n");
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SAFE TO REMOVE");
+  lcd.setCursor(0, 1);
+  lcd.print("SD CARD EJECTED");
+}
+
+void readSDFile() {
+  if (!sdMounted) {
+    Serial.println("[SD DIAG] Cannot read: SD card is not mounted!");
+    return;
+  }
+
+  File file = SD.open(logFilename, FILE_READ);
+  if (file) {
+    Serial.println("\n--- BEGIN /env_log.csv CONTENTS ---");
+    while (file.available()) {
+      Serial.write(file.read());
+    }
+    file.close();
+    Serial.println("--- END /env_log.csv CONTENTS ---\n");
+  } else {
+    Serial.println("[SD DIAG] ERROR: Could not open /env_log.csv for reading.");
+  }
+}
+
+void listSDFiles() {
+  if (!sdMounted) {
+    Serial.println("[SD DIAG] Cannot list files: SD card is not mounted!");
+    return;
+  }
+
+  File root = SD.open("/");
+  Serial.println("\n--- ROOT DIRECTORY FILES ---");
+  while (true) {
+    File entry = root.openNextFile();
+    if (!entry) break;
+    Serial.print(entry.name());
+    if (entry.isDirectory()) {
+      Serial.println("/");
+    } else {
+      Serial.printf(" \t\t SIZE: %d bytes\n", entry.size());
+    }
+    entry.close();
+  }
+  root.close();
+  Serial.println("----------------------------\n");
+}
+
+void handleSerialCommands() {
+  if (Serial.available() > 0) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
+    if (cmd == "1" || cmd == "init") {
+      initSDCard();
+    } else if (cmd == "2" || cmd == "write") {
+      EnvRecord dummy = acquireData();
+      logToSD(dummy);
+    } else if (cmd == "3" || cmd == "read") {
+      readSDFile();
+    } else if (cmd == "4" || cmd == "list") {
+      listSDFiles();
+    } else if (cmd == "5" || cmd == "eject") {
+      ejectSDCard();
+    } else {
+      Serial.println("\n--- AVAILABLE DIAGNOSTIC COMMANDS ---");
+      Serial.println("Type '1' or 'init'  : Mount/Re-initialize SD Card");
+      Serial.println("Type '2' or 'write' : Force manual sample write");
+      Serial.println("Type '3' or 'read'  : View log file contents");
+      Serial.println("Type '4' or 'list'  : List files on card");
+      Serial.println("Type '5' or 'eject' : SAFE EJECT SD card before removal");
+      Serial.println("-------------------------------------\n");
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+
+  // 1. Initialize MicroSD Card
+  initSDCard();
+
+  // 2. Initialize I2C Bus & Peripherals
   Wire.begin(21, 22);
 
   lcd.init();
@@ -145,23 +277,7 @@ void setup() {
   bmpA.setSampling(Adafruit_BMP280::MODE_NORMAL, Adafruit_BMP280::SAMPLING_X2, Adafruit_BMP280::SAMPLING_X16, Adafruit_BMP280::FILTER_X16, Adafruit_BMP280::STANDBY_MS_500);
   lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
 
-  // Initialize MicroSD Card with Status Feedback
-  if (SD.begin(SD_CS_PIN)) {
-    sdMounted = true;
-    Serial.println("SD Card Initialized OK");
-    if (!SD.exists(logFilename)) {
-      File file = SD.open(logFilename, FILE_WRITE);
-      if (file) {
-        file.println("Timestamp_s,Temp_C,Hum_Pct,Pres_hPa,Lux,Flags");
-        file.flush();
-        file.close();
-      }
-    }
-  } else {
-    sdMounted = false;
-    Serial.println("SD Card Initialization FAILED!");
-  }
-
+  // 3. Initialize Wi-Fi & NTP Time
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, pass);
   startClock();
@@ -172,7 +288,8 @@ void setup() {
 }
 
 void loop() {
-  maintainLink(); // Non-blocking reconnection handler
+  handleSerialCommands();
+  maintainLink();
 
   unsigned long now = millis();
 
@@ -218,7 +335,7 @@ void logToSD(const EnvRecord& r) {
   if (logFile) {
     logFile.printf("%ld,%.1f,%.1f,%.1f,%.1f,0x%02X\n",
                    (long)time(nullptr), r.tempC, r.humPct, r.presHpa, r.lux, r.flags);
-    logFile.flush(); // Flush hardware buffer immediately
+    logFile.flush(); 
     logFile.close();
   } else {
     sdMounted = false;
@@ -228,6 +345,14 @@ void logToSD(const EnvRecord& r) {
 void updateLCD(const EnvRecord& r) {
   lcd.clear();
 
+  if (!sdMounted) {
+    lcd.setCursor(0, 0);
+    lcd.print("SD: UNMOUNTED");
+    lcd.setCursor(0, 1);
+    lcd.print("SAFE TO REMOVE");
+    return;
+  }
+
   if (r.flags != 0x00) {
     lcd.setCursor(0, 0);
     lcd.print("FLAG: 0x");
@@ -236,7 +361,7 @@ void updateLCD(const EnvRecord& r) {
     lcd.print(" ERR");
 
     lcd.setCursor(0, 1);
-    lcd.print(sdMounted ? "SD: LOGGING" : "SD: NO CARD");
+    lcd.print("SD: LOGGING");
     return;
   }
 
@@ -254,8 +379,7 @@ void updateLCD(const EnvRecord& r) {
     lcd.print("H:"); lcd.print((int)r.humPct); lcd.print("%");
 
     lcd.setCursor(0, 1);
-    lcd.print("SD:");
-    lcd.print(sdMounted ? "LOGGING OK" : "OFFLINE");
+    lcd.print("SD: LOGGING OK");
   } else {
     lcd.setCursor(0, 0);
     lcd.print("P:"); lcd.print(r.presHpa, 1); lcd.print("hPa");
