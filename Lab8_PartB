@@ -1,0 +1,94 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+#define DEVICE_ID "g01-node-01"
+
+// Network Credentials
+const char* ssid = "Irma Gilda’s iPhone";
+const char* pass = "xpkaapejw47r4";
+
+// Hardware & Web Server setup
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+WebServer server(80); // HTTP server on port 80
+
+// Environmental Record Structure
+struct EnvRecord {
+  float tempC;
+  float humPct;
+  float presHpa;
+  uint8_t flags; // Bitmask for suspect channels
+};
+
+EnvRecord latest;
+
+// Helper function to build HTML table cell with visual flagging
+String cell(float v, const char* unit, bool suspect) {
+  String s = "<td";
+  if (suspect) s += " style='color:#c25e0a;font-weight:bold'"; // Highlight suspect data
+  s += ">" + String(v, 2) + " " + unit;
+  if (suspect) s += " (suspect)";
+  return s + "</td>";
+}
+
+// Handler for root web route ("/")
+void handleRoot() {
+  EnvRecord r = latest;
+  
+  // Explicitly escape quotes so browsers correctly parse the meta tag
+  String h = "<html><head><meta http-equiv=\"refresh\" content=\"5\"></head><body>";
+  h += "<h2>Node " + String(DEVICE_ID) + "</h2><table border='1' cellpadding='5'>";
+  h += "<tr><th>Sensor</th><th>Value</th></tr>";
+  h += "<tr><td>Temperature</td>" + cell(r.tempC, "C", r.flags & 0x01) + "</tr>";
+  h += "<tr><td>Humidity</td>" + cell(r.humPct, "%", r.flags & 0x02) + "</tr>";
+  h += "<tr><td>Pressure</td>" + cell(r.presHpa, "hPa", r.flags & 0x04) + "</tr>";
+  h += "</table></body></html>";
+  
+  server.send(200, "text/html", h);
+}
+
+void readSensors() {
+  // Insert your actual Experiment 7 sensor reading logic here.
+  // Example dummy values with simulated readings:
+  latest.tempC = 25.4;
+  latest.humPct = 110.0; // Implausible value (>100%) to demonstrate flagging
+  latest.presHpa = 1013.25;
+
+  // Set bit flags for implausible/suspect channels
+  latest.flags = 0;
+  if (latest.tempC < -10 || latest.tempC > 60) latest.flags |= 0x01; // Temp flag[cite: 4]
+  if (latest.humPct < 0 || latest.humPct > 100)  latest.flags |= 0x02; // Humidity flag[cite: 4]
+  if (latest.presHpa < 800 || latest.presHpa > 1200) latest.flags |= 0x04; // Pressure flag[cite: 4]
+}
+
+void setup() {
+  Serial.begin(115200);
+  lcd.init();
+  lcd.backlight();
+
+  // Connect to Wi-Fi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(250);
+  }
+
+  // Display IP address on LCD[cite: 4]
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("IP:" + WiFi.localIP().toString());
+  lcd.setCursor(0, 1);
+  lcd.print("Server Ready");
+
+  // Define HTTP routes and start server[cite: 4]
+  server.on("/", handleRoot);
+  server.begin();
+  Serial.println("HTTP Server Started at http://" + WiFi.localIP().toString());
+}
+
+void loop() {
+  readSensors();
+  server.handleClient(); // Handle incoming browser requests[cite: 4]
+  delay(100);
+}
