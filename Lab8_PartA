@@ -1,0 +1,66 @@
+#include <WiFi.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// Initialize LCD (Address 0x27 is standard; change to 0x3F if your LCD doesn't display text)
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Network Credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* pass = "YOUR_WIFI_PASSWORD"; // Change to a wrong password first to perform the test!
+
+bool joinNetwork(const char* targetSsid, const char* targetPass, unsigned long timeoutMs = 20000) {
+  WiFi.mode(WIFI_STA); // Set ESP32 to station mode
+  WiFi.begin(targetSsid, targetPass);
+
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < timeoutMs) {
+    delay(250);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.printf("Join failed! Status code: %d\n", WiFi.status());
+    return false;
+  }
+
+  // Connection successful: Print IP, Gateway, and RSSI to Serial Monitor
+  Serial.println("\n--- WiFi Connected Successfully ---");
+  Serial.printf("IP Address : %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("Gateway    : %s\n", WiFi.gatewayIP().toString().c_str());
+  Serial.printf("RSSI       : %d dBm\n", WiFi.RSSI());
+  Serial.println("-----------------------------------\n");
+
+  return true;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Connecting WiFi...");
+
+  // Join Network
+  if (joinNetwork(ssid, pass)) {
+    // Display IP and RSSI on 16x2 LCD
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("IP:" + WiFi.localIP().toString());
+    lcd.setCursor(0, 1);
+    lcd.print("RSSI:" + String(WiFi.RSSI()) + " dBm");
+  } else {
+    // Display failure state on LCD
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Conn Failed!");
+    lcd.setCursor(0, 1);
+    lcd.print("Status: " + String(WiFi.status()));
+  }
+}
+
+void loop() {
+  // Nothing needed in loop for Part A
+}
