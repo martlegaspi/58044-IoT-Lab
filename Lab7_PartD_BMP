@@ -13,7 +13,7 @@
 
 // --- Peripheral Instances ---
 LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
-Adafruit_BME280   bmeA;
+Adafruit_BMP280   bmpA;
 BH1750            lightMeter(BH1750_ADDR);
 DHT               dht(DHT_PIN, DHT_TYPE);
 
@@ -54,14 +54,14 @@ void setup() {
   dht.begin();
 
   // Initialize BMP280
-  if (!bmeA.begin(BMP_A_ADDR)) {
+  if (!bmpA.begin(BMP_A_ADDR)) {
     Serial.println("[WARN] BMP280 failed to initialize!");
   } else {
-    bmeA.setSampling(Adafruit_BME280::MODE_NORMAL,
-                    Adafruit_BME280::SAMPLING_X2,
-                    Adafruit_BME280::SAMPLING_X16,
-                    Adafruit_BME280::FILTER_X16,
-                    Adafruit_BME280::STANDBY_MS_500);
+    bmpA.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                    Adafruit_BMP280::SAMPLING_X2,
+                    Adafruit_BMP280::SAMPLING_X16,
+                    Adafruit_BMP280::FILTER_X16,
+                    Adafruit_BMP280::STANDBY_MS_500);
   }
 
   // Initialize BH1750
@@ -104,7 +104,7 @@ EnvRecord acquireData() {
   r.ts      = millis() / 1000;
   r.tempC   = dht.readTemperature();
   r.humPct  = dht.readHumidity();
-  r.presHpa = bmeA.readPressure() / 100.0F; // Convert Pa to hPa
+  r.presHpa = bmpA.readPressure() / 100.0F; // Convert Pa to hPa
   r.lux     = lightMeter.readLightLevel();
   return r;
 }
